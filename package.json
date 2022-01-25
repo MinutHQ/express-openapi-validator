@@ -1,6 +1,6 @@
 {
-  "name": "express-openapi-validator",
-  "version": "5.5.7",
+  "name": "@viktorhanssonminut/express-openapi-validator",
+  "version": "4.13.2",
   "description": "Automatically validate API requests and responses with OpenAPI 3 and Express.",
   "main": "dist/index.js",
   "scripts": {
@@ -18,7 +18,7 @@
     "commit": "cz"
   },
   "repository": {
-    "url": "https://github.com/cdimascio/express-openapi-validator"
+    "url": "https://github.com/MinutHQ/express-openapi-validator"
   },
   "files": [
     "/dist"

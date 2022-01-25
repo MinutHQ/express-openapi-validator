@@ -79,7 +79,12 @@ export class RequestValidator {
     const key = `${req.method}-${path}-${contentTypeKey}`;
 
     if (!this.middlewareCache[key]) {
-      const middleware = this.buildMiddleware(path, reqSchema, contentType, key);
+      const middleware = this.buildMiddleware(
+        path,
+        reqSchema,
+        contentType,
+        key,
+      );
       this.middlewareCache[key] = middleware;
     }
     return this.middlewareCache[key](req, res, next);
@@ -103,17 +108,23 @@ export class RequestValidator {
     path: string,
     reqSchema: OperationObject,
     contentType: ContentType,
-    ajvCacheKey: string
+    ajvCacheKey: string,
   ): RequestHandler {
     const apiDoc = this.apiDoc;
     const schemaParser = new ParametersSchemaParser(this.ajv, apiDoc);
     const parameters = schemaParser.parse(path, reqSchema.parameters);
     const securityQueryParam = Security.queryParam(apiDoc, reqSchema);
     const body = new BodySchemaParser().parse(path, reqSchema, contentType);
-    const validator = new Validator(this.apiDoc, parameters, body, {
-      general: this.ajv,
-      body: this.ajvBody,
-    }, ajvCacheKey);
+    const validator = new Validator(
+      this.apiDoc,
+      parameters,
+      body,
+      {
+        general: this.ajv,
+        body: this.ajvBody,
+      },
+      ajvCacheKey,
+    );
 
     const allowUnknownQueryParameters = !!(
       reqSchema['x-eov-allow-unknown-query-parameters'] ??
@@ -157,11 +168,16 @@ export class RequestValidator {
       mutator.modifyRequest(req);
 
       if (!allowUnknownQueryParameters) {
-        this.processQueryParam(
-          req.query,
-          schemaProperties.query,
-          securityQueryParam,
-        );
+        try {
+          this.processQueryParam(
+            req.query,
+            schemaProperties.query,
+            securityQueryParam,
+          );
+        } catch (err) {
+          //@ts-ignore
+          req.validationErrors = err;
+        }
       }
 
       const schemaBody = <any>validator?.schemaBody;
@@ -218,6 +234,11 @@ export class RequestValidator {
           message: message,
         });
         error.errors = err.errors;
+        if (message.includes('should NOT have additional properties')) {
+          // @ts-ignore
+          req.bodyValidationError = error;
+          return next();
+        }
         throw error;
       }
     };
@@ -274,18 +295,25 @@ export class RequestValidator {
     whiteList.forEach((item) => knownQueryParams.add(item));
     const queryParams = Object.keys(query);
     const allowedEmpty = schema.allowEmptyValue;
+    const unknownParams = [];
     for (const q of queryParams) {
       if (!knownQueryParams.has(q)) {
-        throw new BadRequest({
-          path: `/query/${q}`,
-          message: `Unknown query parameter '${q}'`,
-        });
+        unknownParams.push(q);
       } else if (!allowedEmpty?.has(q) && (query[q] === '' || null)) {
         throw new BadRequest({
           path: `/query/${q}`,
           message: `Empty value found for query parameter '${q}'`,
         });
       }
+    }
+    if (unknownParams.length > 0) {
+      const errors = unknownParams.map((q) => {
+        return {
+          path: `.query.${q}`,
+          message: `Unknown query parameter '${q}'`,
+        };
+      });
+      throw { message: 'Unknown query parameter', errors: errors };
     }
   }
 }
@@ -306,7 +334,7 @@ class Validator {
       general: Ajv;
       body: Ajv;
     },
-    ajvCacheKey: string
+    ajvCacheKey: string,
   ) {
     this.apiDoc = apiDoc;
     this.schemaGeneral = this._schemaGeneral(parametersSchema);
@@ -315,7 +343,11 @@ class Validator {
       ...(<any>this.schemaGeneral).properties, // query, header, params props
       body: (<any>this.schemaBody).properties.body, // body props
     };
-    this.validatorGeneral = useAjvCache(ajv.general, this.schemaGeneral, ajvCacheKey);
+    this.validatorGeneral = useAjvCache(
+      ajv.general,
+      this.schemaGeneral,
+      ajvCacheKey,
+    );
     this.validatorBody = useAjvCache(ajv.body, this.schemaBody, ajvCacheKey);
   }
 
