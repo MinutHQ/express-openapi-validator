@@ -128,11 +128,16 @@ export class RequestValidator {
       mutator.modifyRequest(req);
 
       if (!allowUnknownQueryParameters) {
-        this.processQueryParam(
-          req.query,
-          schemaProperties.query,
-          securityQueryParam,
-        );
+        try {
+          this.processQueryParam(
+            req.query,
+            schemaProperties.query,
+            securityQueryParam,
+            );
+          }catch (err) {
+            //@ts-ignore
+            req.validationErrors = err
+          }
       }
 
       const cookies = req.cookies
@@ -177,7 +182,12 @@ export class RequestValidator {
           message: message,
         });
         error.errors = err.errors;
-        throw error;
+        if (message.includes("should NOT have additional properties")) {
+          // @ts-ignore
+          req.bodyValidationError = error
+          return next()
+        }
+        throw error
       }
     };
   }
@@ -213,18 +223,25 @@ export class RequestValidator {
     whiteList.forEach((item) => knownQueryParams.add(item));
     const queryParams = Object.keys(query);
     const allowedEmpty = schema.allowEmptyValue;
+    const unknownParams = []
     for (const q of queryParams) {
       if (!knownQueryParams.has(q)) {
-        throw new BadRequest({
-          path: `.query.${q}`,
-          message: `Unknown query parameter '${q}'`,
-        });
+        unknownParams.push(q)
       } else if (!allowedEmpty?.has(q) && (query[q] === '' || null)) {
         throw new BadRequest({
           path: `.query.${q}`,
           message: `Empty value found for query parameter '${q}'`,
         });
       }
+    }
+    if (unknownParams.length > 0) {
+      const errors  = unknownParams.map(q => {
+        return {
+          path: `.query.${q}`,
+          message: `Unknown query parameter '${q}'`,
+        }
+      })
+      throw {message: "Unknown query parameter", errors: errors};
     }
   }
 }
