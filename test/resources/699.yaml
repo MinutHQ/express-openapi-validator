@@ -17,7 +17,11 @@ paths:
           in: query
           schema:
             type: string
-            enum: ['functionNotExists', 'functionBadFormat']
+            enum:
+              - functionNotExists
+              - functionBadFormat
+              - functionNotExistsWithoutRef
+              - functionBadFormatWithoutRef
         - name: shortOrLong
           in: query
           required: false
@@ -62,6 +66,11 @@ components:
       anyOf:
         - maxLength: 2
         - minLength: 4
+    HistoryItem:
+      type: object
+      properties:
+        modificationDate:
+          $ref: "#/components/schemas/Date"
     StringList:
       type: string
       format: string-list
@@ -78,3 +87,16 @@ components:
           $ref: "#/components/schemas/Date"
         shortOrLong:
           $ref: "#/components/schemas/ShortOrLong"
+        history:
+          type: array
+          items:
+            $ref: "#/components/schemas/HistoryItem"
+        historyWithoutRef:
+          type: array
+          items:
+            type: object
+            properties:
+              modificationDate:
+                type: string
+                format: date
+

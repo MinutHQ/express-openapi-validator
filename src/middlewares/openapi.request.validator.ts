@@ -1,4 +1,4 @@
-import { Ajv, ValidateFunction } from 'ajv';
+import Ajv, { ValidateFunction } from 'ajv';
 import { createRequestAjv } from '../framework/ajv';
 import {
   ContentType,
@@ -76,6 +76,20 @@ export class RequestValidator {
     return this.middlewareCache[key](req, res, next);
   }
 
+  private warnUnknownQueryParametersKeyword(
+    reqSchema: OperationObject,
+  ): boolean {
+    if (typeof reqSchema['x-allow-unknown-query-parameters'] === 'boolean') {
+      console.warn(
+        '"x-allow-unknown-query-parameters" is deprecated. Use "x-eov-allow-unknown-query-parameters"',
+      );
+    }
+    return (
+      reqSchema['x-allow-unknown-query-parameters'] ??
+      this.requestOpts.allowUnknownQueryParameters
+    );
+  }
+
   private buildMiddleware(
     path: string,
     reqSchema: OperationObject,
@@ -92,8 +106,8 @@ export class RequestValidator {
     });
 
     const allowUnknownQueryParameters = !!(
-      reqSchema['x-allow-unknown-query-parameters'] ??
-      this.requestOpts.allowUnknownQueryParameters
+      reqSchema['x-eov-allow-unknown-query-parameters'] ??
+      this.warnUnknownQueryParametersKeyword(reqSchema)
     );
 
     return (req: OpenApiRequest, res: Response, next: NextFunction): void => {
@@ -133,11 +147,11 @@ export class RequestValidator {
             req.query,
             schemaProperties.query,
             securityQueryParam,
-            );
-          }catch (err) {
-            //@ts-ignore
-            req.validationErrors = err
-          }
+          );
+        } catch (err) {
+          //@ts-ignore
+          req.validationErrors = err;
+        }
       }
 
       const cookies = req.cookies
@@ -155,6 +169,11 @@ export class RequestValidator {
         body: req.body,
       };
       const schemaBody = <any>validator?.schemaBody;
+
+      if (contentType.mediaType === 'multipart/form-data') {
+        this.multipartNested(req, schemaBody);
+      }
+
       const discriminator = schemaBody?.properties?.body?._discriminator;
       const discriminatorValidator = this.discriminatorValidator(
         req,
@@ -182,14 +201,29 @@ export class RequestValidator {
           message: message,
         });
         error.errors = err.errors;
-        if (message.includes("should NOT have additional properties")) {
+        if (message.includes('should NOT have additional properties')) {
           // @ts-ignore
-          req.bodyValidationError = error
-          return next()
+          req.bodyValidationError = error;
+          return next();
         }
-        throw error
+        throw error;
       }
     };
+  }
+
+  private multipartNested(req, schemaBody) {
+    Object.keys(req.body).forEach((key) => {
+      const value = req.body[key];
+      const type = schemaBody?.properties?.body?.properties[key]?.type;
+      if (['array', 'object'].includes(type)) {
+        try {
+          req.body[key] = JSON.parse(value);
+        } catch (e) {
+          // NOOP
+        }
+      }
+    });
+    return null;
   }
 
   private discriminatorValidator(req, discriminator) {
@@ -201,7 +235,7 @@ export class RequestValidator {
       } else {
         throw new BadRequest({
           path: req.path,
-          message: `'${property}' should be equal to one of the allowed values: ${options
+          message: `'${property}' must be equal to one of the allowed values: ${options
             .map((o) => o.option)
             .join(', ')}.`,
         });
@@ -223,25 +257,25 @@ export class RequestValidator {
     whiteList.forEach((item) => knownQueryParams.add(item));
     const queryParams = Object.keys(query);
     const allowedEmpty = schema.allowEmptyValue;
-    const unknownParams = []
+    const unknownParams = [];
     for (const q of queryParams) {
       if (!knownQueryParams.has(q)) {
-        unknownParams.push(q)
+        unknownParams.push(q);
       } else if (!allowedEmpty?.has(q) && (query[q] === '' || null)) {
         throw new BadRequest({
-          path: `.query.${q}`,
+          path: `/query/${q}`,
           message: `Empty value found for query parameter '${q}'`,
         });
       }
     }
     if (unknownParams.length > 0) {
-      const errors  = unknownParams.map(q => {
+      const errors = unknownParams.map((q) => {
         return {
           path: `.query.${q}`,
           message: `Unknown query parameter '${q}'`,
-        }
-      })
-      throw {message: "Unknown query parameter", errors: errors};
+        };
+      });
+      throw { message: 'Unknown query parameter', errors: errors };
     }
   }
 }

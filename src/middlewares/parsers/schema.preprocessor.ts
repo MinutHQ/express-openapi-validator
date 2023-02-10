@@ -1,4 +1,4 @@
-import { Ajv } from 'ajv';
+import Ajv from 'ajv';
 import ajv = require('ajv');
 import * as cloneDeep from 'lodash.clonedeep';
 import * as _get from 'lodash.get';
@@ -56,7 +56,7 @@ type Schema = ReferenceObject | SchemaObject;
 if (!Array.prototype['flatMap']) {
   // polyfill flatMap
   // TODO remove me when dropping node 10 support
-  Array.prototype['flatMap'] = function (lambda) {
+  Array.prototype['flatMap'] = function(lambda) {
     return Array.prototype.concat.apply([], this.map(lambda));
   };
   Object.defineProperty(Array.prototype, 'flatMap', { enumerable: false });
@@ -199,6 +199,9 @@ export class SchemaPreprocessor {
           const child = new Node(node, s, [...node.path, 'anyOf', i + '']);
           recurse(node, child, opts);
         });
+      } else if (schema.type === 'array' && schema.items) {
+        const child = new Node(node, schema.items, [...node.path, 'items']);
+        recurse(node, child, opts);
       } else if (schema.properties) {
         Object.entries(schema.properties).forEach(([id, cschema]) => {
           const path = [...node.path, 'properties', id];
@@ -260,10 +263,10 @@ export class SchemaPreprocessor {
 
   private processDiscriminator(parent: Schema, schema: Schema, opts: any = {}) {
     const o = opts.discriminator;
-    const schemaObj = <SchemaObject>schema;
+    const schemaObj = <OpenAPIV3.CompositionSchemaObject>schema;
     const xOf = schemaObj.oneOf ? 'oneOf' : schemaObj.anyOf ? 'anyOf' : null;
 
-    if (xOf && schemaObj?.discriminator?.propertyName && !o.discriminator) {
+    if (xOf && schemaObj.discriminator?.propertyName && !o.discriminator) {
       const options = schemaObj[xOf].flatMap((refObject) => {
         if (refObject['$ref'] === undefined) {
           return [];
@@ -320,7 +323,7 @@ export class SchemaPreprocessor {
           ...(o.properties ?? {}),
           ...(newSchema.properties ?? {}),
         };
-        if(Object.keys(newProperties).length > 0) {
+        if (Object.keys(newProperties).length > 0) {
           newSchema.properties = newProperties;
         }
 
@@ -329,11 +332,15 @@ export class SchemaPreprocessor {
           delete newSchema.required;
         }
 
-        ancestor._discriminator ??= {
-          validators: {},
-          options: o.options,
-          property: o.discriminator,
-        };
+        // Expose `_discriminator` to consumers without exposing to AJV
+        Object.defineProperty(ancestor, '_discriminator', {
+          enumerable: false,
+          value: ancestor._discriminator ?? {
+            validators: {},
+            options: o.options,
+            property: o.discriminator,
+          },
+        });
 
         for (const option of options) {
           ancestor._discriminator.validators[option] =
@@ -346,6 +353,38 @@ export class SchemaPreprocessor {
     }
   }
 
+  /**
+   * Attach custom `x-eov-*-serdes` vendor extension for performing
+   * serialization (response) and deserialization (request) of data.
+   *
+   * This only applies to `type=string` schemas with a `format` that was flagged for serdes.
+   *
+   * The goal of this function is to define a JSON schema that:
+   * 1) Only performs the method for matching req/res (e.g. never deserialize a response)
+   * 2) Validates initial data THEN performs serdes THEN validates output. In that order.
+   * 3) Hide internal schema keywords (and its validation errors) from user.
+   *
+   * The solution is in three parts:
+   * 1) Remove the `type` keywords and replace it with a custom clone `x-eov-type`.
+   *    This ensures that we control the order of type validations,
+   *    and allows the response serialization to occur before AJV enforces the type.
+   * 2) Add an `x-eov-req-serdes` keyword.
+   *    This keyword will deserialize the request string AFTER all other validations occur,
+   *    ensuring that the string is valid before modifications.
+   *    This keyword is only attached when deserialization is enabled.
+   * 3) Add an `x-eov-res-serdes` keyword.
+   *    This keyword will serialize the response object BEFORE any other validations occur,
+   *    ensuring the output is validated as a string.
+   *    This keyword is only attached when serialization is enabled.
+   * 4) If `nullable` is set, set the type as every possible type.
+   *    Then initial type checking will _always_ pass and the `x-eov-type` will narrow it down later.
+   *
+   * See [`createAjv`](../../framework/ajv/index.ts) for custom keyword definitions.
+   *
+   * @param {object} parent - parent schema
+   * @param {object} schema - schema
+   * @param {object} state - traversal state
+   */
   private handleSerDes(
     parent: SchemaObject,
     schema: SchemaObject,
@@ -356,8 +395,20 @@ export class SchemaPreprocessor {
       !!schema.format &&
       this.serDesMap[schema.format]
     ) {
-      (<any>schema).type = [this.serDesMap[schema.format].jsonType || 'object', 'string'];
-      schema['x-eov-serdes'] = this.serDesMap[schema.format];
+      const serDes = this.serDesMap[schema.format];
+      (<any>schema)['x-eov-type'] = schema.type;
+      if ('nullable' in schema) {
+        // Ajv requires `type` keyword with `nullable` (regardless of value).
+        (<any>schema).type = ['string', 'number', 'boolean', 'object', 'array'];
+      } else {
+        delete schema.type;
+      }
+      if (serDes.deserialize) {
+        schema['x-eov-req-serdes'] = serDes;
+      }
+      if (serDes.serialize) {
+        schema['x-eov-res-serdes'] = serDes;
+      }
     }
   }
 
