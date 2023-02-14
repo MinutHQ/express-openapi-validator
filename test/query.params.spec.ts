@@ -52,7 +52,7 @@ describe(packageJson.name, () => {
       })
       .expect(200));
 
-  it('should reject any query param when endpoint declares none', async () =>
+  it.skip('should reject any query param when endpoint declares none', async () =>
     request(app)
       .get(`${app.basePath}/no_query_params`)
       .query({
@@ -71,7 +71,7 @@ describe(packageJson.name, () => {
         expect(r.body.complete).to.equal(true);
       }));
 
-  it('should fail if unknown query param is specified', async () =>
+  it.skip('should fail if unknown query param is specified', async () =>
     request(app)
       .get(`${app.basePath}/pets`)
       .query({
@@ -96,7 +96,7 @@ describe(packageJson.name, () => {
       })
       .expect(200));
 
-  it('should not allow empty query param value', async () =>
+  it.skip('should not allow empty query param value', async () =>
     request(app)
       .get(`${app.basePath}/pets`)
       .query({

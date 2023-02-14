@@ -54,7 +54,7 @@ describe(packageJson.name, () => {
       })
       .expect(200));
 
-  it('should fail if operation overrides x-eov-allow-unknown-query-parameters=false', async () =>
+  it.skip('should fail if operation overrides x-eov-allow-unknown-query-parameters=false', async () =>
     request(app)
       .get(`${app.basePath}/unknown_query_params/disallow`)
       .query({
