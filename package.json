@@ -1,6 +1,6 @@
 {
-  "name": "@viktorhanssonminut/express-openapi-validator",
-  "version": "5.0.1",
+  "name": "@minuthq/express-openapi-validator",
+  "version": "5.0.3",
   "description": "Automatically validate API requests and responses with OpenAPI 3 and Express.",
   "main": "dist/index.js",
   "scripts": {
@@ -15,6 +15,9 @@
     "codacy": "cat coverage/lcov.info | codacy-coverage",
     "test:reset": "rm -rf node_modules && npm i && npm run compile && npm t",
     "commit": "cz"
+  },
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com"
   },
   "repository": {
     "url": "https://github.com/MinutHQ/express-openapi-validator"
