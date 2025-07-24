@@ -2,6 +2,11 @@ import { Request, Response } from 'express';
 import * as http from 'http';
 import * as express from 'express';
 
+export interface AppWithServer extends express.Application {
+  server: http.Server;
+  basePath: string;
+}
+
 export function startServer(app, port: number): Promise<http.Server> {
   return new Promise((resolve, reject) => {
     const http = require('http');
@@ -113,6 +118,16 @@ export function routes(app) {
     // req.body will hold the text fields, if there were any
     res.json({
       ...req.body,
+      id: 'new-id',
+    });
+  });
+
+  app.post('/v1/pets_content_types', function(req: Request, res: Response): void {
+    // req.file is the `avatar` file
+    // req.body will hold the text fields, if there were any
+    res.json({
+      ...req.body,
+      contentType: req.headers['content-type'],
       id: 'new-id',
     });
   });

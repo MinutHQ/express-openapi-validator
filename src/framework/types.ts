@@ -1,8 +1,13 @@
 import * as ajv from 'ajv';
 import * as multer from 'multer';
-import { FormatsPluginOptions, FormatOptions } from 'ajv-formats';
-import { Request, Response, NextFunction } from 'express';
+import { FormatsPluginOptions } from 'ajv-formats';
+import { Request, Response, NextFunction, RequestHandler } from 'express';
+import { RouteMetadata } from './openapi.spec.loader';
+import AjvDraft4 from 'ajv-draft-04';
+import Ajv2020 from 'ajv/dist/2020';
 export { OpenAPIFrameworkArgs };
+
+export type AjvInstance = AjvDraft4 | Ajv2020 
 
 export type BodySchema =
   | OpenAPIV3.ReferenceObject
@@ -21,7 +26,7 @@ export interface ValidationSchema extends ParametersSchema {
 }
 
 export interface OpenAPIFrameworkInit {
-  apiDoc: OpenAPIV3.Document;
+  apiDoc: OpenAPIV3.DocumentV3 | OpenAPIV3.DocumentV3_1;
   basePaths: string[];
 }
 export type SecurityHandlers = {
@@ -43,15 +48,29 @@ export interface Options extends ajv.Options {
   ajvFormats?: FormatsPluginOptions;
 }
 
-export interface RequestValidatorOptions extends Options, ValidateRequestOpts {}
+export interface RequestValidatorOptions extends Options, ValidateRequestOpts { }
 
 export type ValidateRequestOpts = {
+  /**
+   * Whether AJV should check all rules and collect all errors or return after the first error.
+   *
+   * This should not be set to `true` in production. See [AJV: Security risks of trusted
+   * schemas](https://ajv.js.org/security.html#security-risks-of-trusted-schemas).
+   */
+  allErrors?: boolean;
   allowUnknownQueryParameters?: boolean;
   coerceTypes?: boolean | 'array';
   removeAdditional?: boolean | 'all' | 'failing';
 };
 
 export type ValidateResponseOpts = {
+  /**
+   * Whether AJV should check all rules and collect all errors or return after the first error.
+   *
+   * This should not be set to `true` in production. See [AJV: Security risks of trusted
+   * schemas](https://ajv.js.org/security.html#security-risks-of-trusted-schemas).
+   */
+  allErrors?: boolean;
   removeAdditional?: boolean | 'all' | 'failing';
   coerceTypes?: boolean | 'array';
   onError?: (err: InternalServerError, json: any, req: Request) => void;
@@ -63,7 +82,11 @@ export type ValidateSecurityOpts = {
 
 export type OperationHandlerOptions = {
   basePath: string;
-  resolver: Function;
+  resolver: (
+    handlersPath: string,
+    route: RouteMetadata,
+    apiDoc: OpenAPIV3.DocumentV3 | OpenAPIV3.DocumentV3_1,
+  ) => unknown;
 };
 
 export type Format = {
@@ -108,8 +131,26 @@ export type SerDesMap = {
   [format: string]: SerDes
 };
 
+type Primitive = undefined | null | boolean | string | number | Function
+
+type Immutable<T> =
+  T extends Primitive ? T :
+    T extends Array<infer U> ? ReadonlyArray<U> :
+      T extends Map<infer K, infer V> ? ReadonlyMap<K, V> : Readonly<T>
+
+type DeepImmutable<T> =
+  T extends Primitive ? T :
+    T extends Array<infer U> ? DeepImmutableArray<U> :
+      T extends Map<infer K, infer V> ? DeepImmutableMap<K, V> : DeepImmutableObject<T>
+
+interface DeepImmutableArray<T> extends ReadonlyArray<DeepImmutable<T>> {}
+interface DeepImmutableMap<K, V> extends ReadonlyMap<DeepImmutable<K>, DeepImmutable<V>> {}
+type DeepImmutableObject<T> = {
+  readonly [K in keyof T]: DeepImmutable<T[K]>
+}
+
 export interface OpenApiValidatorOpts {
-  apiSpec: OpenAPIV3.Document | string;
+  apiSpec: DeepImmutable<OpenAPIV3.DocumentV3> | DeepImmutable<OpenAPIV3.DocumentV3_1> | string;
   validateApiSpec?: boolean;
   validateResponses?: boolean | ValidateResponseOpts;
   validateRequests?: boolean | ValidateRequestOpts;
@@ -118,6 +159,7 @@ export interface OpenApiValidatorOpts {
   ignoreUndocumented?: boolean;
   securityHandlers?: SecurityHandlers;
   coerceTypes?: boolean | 'array';
+  useRequestUrl?: boolean;
   /**
    * @deprecated
    * Use `formats` + `validateFormats` to ignore specified formats
@@ -151,8 +193,8 @@ export interface NormalizedOpenApiValidatorOpts extends OpenApiValidatorOpts {
 }
 
 export namespace OpenAPIV3 {
-  export interface Document {
-    openapi: string;
+  export interface DocumentV3 {
+    openapi: `3.0.${string}`;
     info: InfoObject;
     servers?: ServerObject[];
     paths: PathsObject;
@@ -162,6 +204,20 @@ export namespace OpenAPIV3 {
     externalDocs?: ExternalDocumentationObject;
   }
 
+  interface ComponentsV3_1 extends ComponentsObject {
+    pathItems?: { [path: string]: PathItemObject | ReferenceObject }
+  }
+
+  export interface DocumentV3_1 extends Omit<DocumentV3, 'paths' | 'info' | 'components'| "openapi" > {
+    openapi: `3.1.${string}`;
+    paths?: DocumentV3['paths'];
+    info: InfoObjectV3_1;
+    components: ComponentsV3_1;
+    webhooks: {
+      [name: string]: PathItemObject | ReferenceObject
+    }
+  }
+
   export interface InfoObject {
     title: string;
     description?: string;
@@ -169,6 +225,10 @@ export namespace OpenAPIV3 {
     contact?: ContactObject;
     license?: LicenseObject;
     version: string;
+  }
+
+  interface InfoObjectV3_1 extends InfoObject {
+    summary: string;
   }
 
   export interface ContactObject {
@@ -239,7 +299,7 @@ export namespace OpenAPIV3 {
     in: string;
   }
 
-  export interface HeaderObject extends ParameterBaseObject {}
+  export interface HeaderObject extends ParameterBaseObject { }
 
   interface ParameterBaseObject {
     description?: string;
@@ -316,6 +376,7 @@ export namespace OpenAPIV3 {
     xml?: XMLObject;
     externalDocs?: ExternalDocumentationObject;
     example?: any;
+    examples?: any;
     deprecated?: boolean;
 
     // Express-openapi-validator specific properties
@@ -473,7 +534,7 @@ export interface OpenAPIFrameworkPathObject {
 }
 
 interface OpenAPIFrameworkArgs {
-  apiDoc: OpenAPIV3.Document | string;
+  apiDoc: OpenAPIV3.DocumentV3 | OpenAPIV3.DocumentV3_1 | string;
   validateApiSpec?: boolean;
   $refParser?: {
     mode: 'bundle' | 'dereference';
@@ -483,7 +544,7 @@ interface OpenAPIFrameworkArgs {
 export interface OpenAPIFrameworkAPIContext {
   // basePaths: BasePath[];
   basePaths: string[];
-  getApiDoc(): OpenAPIV3.Document;
+  getApiDoc(): OpenAPIV3.DocumentV3 | OpenAPIV3.DocumentV3_1;
 }
 
 export interface OpenAPIFrameworkVisitor {
@@ -495,6 +556,7 @@ export interface OpenApiRequestMetadata {
   openApiRoute: string;
   pathParams: { [index: string]: string };
   schema: OpenAPIV3.OperationObject;
+  serial: number;
 }
 
 export interface OpenApiRequest extends Request {
@@ -558,7 +620,7 @@ export interface ValidationError {
 export interface ValidationErrorItem {
   path: string;
   message: string;
-  error_code?: string;
+  errorCode?: string;
 }
 
 interface ErrorHeaders {

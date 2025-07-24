@@ -6,6 +6,10 @@ import * as OpenApiValidator from '../src';
 import * as resolvers from '../src/resolvers';
 import { createApp } from './common/app';
 import { OpenApiValidatorOpts } from '../src/framework/types';
+import * as pkg from '../package.json';
+import { AppWithServer } from './common/app.common';
+
+const expressVersion = pkg.devDependencies.express;
 
 describe('operation handler', () => {
   let defaultNumberOfRoutes = null;
@@ -17,11 +21,15 @@ describe('operation handler', () => {
     const mwf = OpenApiValidator.middleware;
     app.use(mwf({ apiSpec }));
 
-    expect((<any>mwf)._oav)
+    expect((mwf as any)._oav)
       .to.have.property('options')
       .to.deep.include({ operationHandlers: false });
 
-    defaultNumberOfRoutes = app._router.stack.length;
+    // TODO - need _router for express 4
+    const firstDigit = expressVersion.match(/\d/)?.[0];
+    defaultNumberOfRoutes = firstDigit === '4'
+      ? app._router.stack.length
+      : app.router.stack.length;
   });
 
   it('should not install handlers when nothing provided', async () => {
@@ -31,7 +39,7 @@ describe('operation handler', () => {
     const mwf = OpenApiValidator.middleware;
     app.use(mwf({ apiSpec }));
 
-    expect((<any>mwf)._oav)
+    expect((mwf as any)._oav)
       .to.have.property('options')
       .to.deep.include({ operationHandlers: false });
   });
@@ -48,7 +56,7 @@ describe('operation handler', () => {
 
     app.use(oav);
 
-    expect((<any>mwf)._oav)
+    expect((mwf as any)._oav)
       .to.have.property('options')
       .to.deep.include({
         operationHandlers: {
@@ -80,7 +88,7 @@ describe('operation handler', () => {
 
     app.use(oav);
 
-    expect((<any>mwf)._oav)
+    expect((mwf as any)._oav)
       .to.have.property('options')
       .to.deep.include({ operationHandlers: handler });
 
@@ -89,8 +97,8 @@ describe('operation handler', () => {
 });
 
 describe('custom operation handler', () => {
-  let app = null;
-  let basePath = null;
+  let app: AppWithServer;
+  let basePath;
   const apiSpec = path.join(
     __dirname,
     'resources/eov-operations.modulepath.yaml',
@@ -120,4 +128,12 @@ describe('custom operation handler', () => {
       });
   });
 
+  it('should coerce path parameters', async () => {
+    return request(app)
+      .get(`${basePath}/users/123/info`)
+      .expect(200)
+      .then((r) => {
+        expect(r.text).to.be.equal('{"id":123}');
+      });
+  });
 });

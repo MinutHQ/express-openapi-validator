@@ -23,6 +23,7 @@ interface TraversalState {
 
 interface TopLevelPathNodes {
   requestBodies: Root<SchemaObject>[];
+  requestParameters: Root<SchemaObject>[];
   responses: Root<SchemaObject>[];
 }
 interface TopLevelSchemaNodes extends TopLevelPathNodes {
@@ -43,20 +44,45 @@ class Node<T, P> {
 }
 type SchemaObjectNode = Node<SchemaObject, SchemaObject>;
 
+function isParameterObject(
+  node: ParameterObject | ReferenceObject,
+): node is ParameterObject {
+  return !(node as ReferenceObject).$ref;
+}
+function isReferenceObject(
+  node: ArraySchemaObject | NonArraySchemaObject | ReferenceObject,
+): node is ReferenceObject {
+  return !!(node as ReferenceObject).$ref;
+}
+function isArraySchemaObject(
+  node: ArraySchemaObject | NonArraySchemaObject | ReferenceObject,
+): node is ArraySchemaObject {
+  return !!(node as ArraySchemaObject).items;
+}
+function isNonArraySchemaObject(
+  node: ArraySchemaObject | NonArraySchemaObject | ReferenceObject,
+): node is NonArraySchemaObject {
+  return !isArraySchemaObject(node) && !isReferenceObject(node);
+}
+
 class Root<T> extends Node<T, T> {
   constructor(schema: T, path: string[]) {
     super(null, schema, path);
   }
 }
 
-type SchemaObject = OpenAPIV3.SchemaObject;
+type ArraySchemaObject = OpenAPIV3.ArraySchemaObject;
+type NonArraySchemaObject = OpenAPIV3.NonArraySchemaObject;
+type OperationObject = OpenAPIV3.OperationObject;
+type ParameterObject = OpenAPIV3.ParameterObject;
 type ReferenceObject = OpenAPIV3.ReferenceObject;
+type SchemaObject = OpenAPIV3.SchemaObject;
 type Schema = ReferenceObject | SchemaObject;
 
 if (!Array.prototype['flatMap']) {
   // polyfill flatMap
   // TODO remove me when dropping node 10 support
-  Array.prototype['flatMap'] = function(lambda) {
+  Array.prototype['flatMap'] = function (lambda) {
     return Array.prototype.concat.apply([], this.map(lambda));
   };
   Object.defineProperty(Array.prototype, 'flatMap', { enumerable: false });
@@ -73,12 +99,14 @@ export const httpMethods = new Set([
 ]);
 export class SchemaPreprocessor {
   private ajv: Ajv;
-  private apiDoc: OpenAPIV3.Document;
-  private apiDocRes: OpenAPIV3.Document;
+  private apiDoc: OpenAPIV3.DocumentV3 | OpenAPIV3.DocumentV3_1;
+  private apiDocRes: OpenAPIV3.DocumentV3 | OpenAPIV3.DocumentV3_1;
   private serDesMap: SerDesMap;
   private responseOpts: ValidateResponseOpts;
+  private resolvedSchemaCache = new Map<string, SchemaObject>();
+
   constructor(
-    apiDoc: OpenAPIV3.Document,
+    apiDoc: OpenAPIV3.DocumentV3 | OpenAPIV3.DocumentV3_1,
     ajvOptions: Options,
     validateResponsesOpts: ValidateResponseOpts,
   ) {
@@ -90,21 +118,32 @@ export class SchemaPreprocessor {
 
   public preProcess() {
     const componentSchemas = this.gatherComponentSchemaNodes();
-    const r = this.gatherSchemaNodesFromPaths();
+    let r;
+
+    if (this.apiDoc.paths) {
+      r = this.gatherSchemaNodesFromPaths();
+    }
 
     // Now that we've processed paths, clone a response spec if we are validating responses
     this.apiDocRes = !!this.responseOpts ? cloneDeep(this.apiDoc) : null;
 
+    if (this.apiDoc.components) {
+      this.removeExamples(this.apiDoc.components);
+    }
+
     const schemaNodes = {
       schemas: componentSchemas,
-      requestBodies: r.requestBodies,
-      responses: r.responses,
+      requestBodies: r?.requestBodies,
+      responses: r?.responses,
+      requestParameters: r?.requestParameters,
     };
 
     // Traverse the schemas
-    this.traverseSchemas(schemaNodes, (parent, schema, opts) =>
-      this.schemaVisitor(parent, schema, opts),
-    );
+    if (r) {
+      this.traverseSchemas(schemaNodes, (parent, schema, opts) =>
+        this.schemaVisitor(parent, schema, opts),
+      );
+    }
 
     return {
       apiDoc: this.apiDoc,
@@ -127,10 +166,16 @@ export class SchemaPreprocessor {
 
   private gatherSchemaNodesFromPaths(): TopLevelPathNodes {
     const requestBodySchemas = [];
+    const requestParameterSchemas = [];
     const responseSchemas = [];
 
     for (const [p, pi] of Object.entries(this.apiDoc.paths)) {
       const pathItem = this.resolveSchema<OpenAPIV3.PathItemObject>(pi);
+
+      // Since OpenAPI 3.1, paths can be a #ref to reusable path items
+      // The following line mutates the paths item to dereference the reference, so that we can process as a POJO, as we would if it wasn't a reference
+      this.apiDoc.paths[p] = pathItem;
+
       for (const method of Object.keys(pathItem)) {
         if (httpMethods.has(method)) {
           const operation = <OpenAPIV3.OperationObject>pathItem[method];
@@ -140,14 +185,19 @@ export class SchemaPreprocessor {
           const node = new Root<OpenAPIV3.OperationObject>(operation, path);
           const requestBodies = this.extractRequestBodySchemaNodes(node);
           const responseBodies = this.extractResponseSchemaNodes(node);
+          const requestParameters =
+            this.extractRequestParameterSchemaNodes(node);
 
           requestBodySchemas.push(...requestBodies);
           responseSchemas.push(...responseBodies);
+          requestParameterSchemas.push(...requestParameters);
         }
       }
     }
+
     return {
       requestBodies: requestBodySchemas,
+      requestParameters: requestParameterSchemas,
       responses: responseSchemas,
     };
   }
@@ -208,6 +258,12 @@ export class SchemaPreprocessor {
           const child = new Node(node, cschema, path);
           recurse(node, child, opts);
         });
+      } else if (schema.additionalProperties) {
+        const child = new Node(node, schema.additionalProperties, [
+          ...node.path,
+          'additionalProperties',
+        ]);
+        recurse(node, child, opts);
       }
     };
 
@@ -225,6 +281,10 @@ export class SchemaPreprocessor {
     }
 
     for (const node of nodes.responses) {
+      recurse(null, node, initOpts());
+    }
+
+    for (const node of nodes.requestParameters) {
       recurse(null, node, initOpts());
     }
   }
@@ -256,7 +316,9 @@ export class SchemaPreprocessor {
         // This null check should no longer be necessary
         this.handleSerDes(pschema, nschema, options);
         this.handleReadonly(pschema, nschema, options);
+        this.handleWriteonly(pschema, nschema, options);
         this.processDiscriminator(pschema, nschema, options);
+        this.removeSchemaExamples(pschema, nschema, options);
       }
     }
   }
@@ -412,6 +474,22 @@ export class SchemaPreprocessor {
     }
   }
 
+  private removeSchemaExamples(
+    parent: OpenAPIV3.SchemaObject,
+    schema: OpenAPIV3.SchemaObject,
+    opts,
+  ) {
+    this.removeExamples(parent);
+    this.removeExamples(schema);
+  }
+
+  private removeExamples(
+    object: OpenAPIV3.SchemaObject | OpenAPIV3.MediaTypeObject,
+  ): void {
+    delete object?.example;
+    delete object?.examples;
+  }
+
   private handleReadonly(
     parent: OpenAPIV3.SchemaObject,
     schema: OpenAPIV3.SchemaObject,
@@ -424,6 +502,27 @@ export class SchemaPreprocessor {
     const index = required.indexOf(prop);
     if (schema.readOnly && index > -1) {
       // remove required if readOnly
+      parent.required = required
+        .slice(0, index)
+        .concat(required.slice(index + 1));
+      if (parent.required.length === 0) {
+        delete parent.required;
+      }
+    }
+  }
+
+  private handleWriteonly(
+    parent: OpenAPIV3.SchemaObject,
+    schema: OpenAPIV3.SchemaObject,
+    opts,
+  ) {
+    if (opts.kind === 'req') return;
+
+    const required = parent?.required ?? [];
+    const prop = opts?.path?.[opts?.path?.length - 1];
+    const index = required.indexOf(prop);
+    if (schema.writeOnly && index > -1) {
+      // remove required if writeOnly
       parent.required = required
         .slice(0, index)
         .concat(required.slice(index + 1));
@@ -455,6 +554,10 @@ export class SchemaPreprocessor {
         mediaTypeObject.schema,
       );
       op.requestBody.content[type].schema = mediaTypeSchema;
+
+      // TODO replace with visitor
+      this.removeExamples(op.requestBody.content[type]);
+
       const path = [...node.path, 'requestBody', 'content', type, 'schema'];
       result.push(new Root(mediaTypeSchema, path));
     }
@@ -467,7 +570,7 @@ export class SchemaPreprocessor {
     const op = node.schema;
     const responses = op.responses;
 
-    if (!responses) return;
+    if (!responses) return [];
 
     const schemas: Root<SchemaObject>[] = [];
     for (const [statusCode, response] of Object.entries(responses)) {
@@ -494,6 +597,10 @@ export class SchemaPreprocessor {
               type,
               'schema',
             ];
+
+            // TODO replace with visitor
+            this.removeExamples(rschema.content[type]);
+
             schemas.push(new Root(schema, path));
           }
         }
@@ -502,14 +609,46 @@ export class SchemaPreprocessor {
     return schemas;
   }
 
+  private extractRequestParameterSchemaNodes(
+    operationNode: Root<OperationObject>,
+  ): Root<SchemaObject>[] {
+    return (operationNode.schema.parameters ?? []).flatMap((node) => {
+      const parameterObject = isParameterObject(node) ? node : undefined;
+
+      // TODO replace with visitor
+      // TODO This does not handle JSON query parameters
+      this.removeExamples(parameterObject);
+
+      if (!parameterObject?.schema) return [];
+
+      const schema = isNonArraySchemaObject(parameterObject.schema)
+        ? parameterObject.schema
+        : undefined;
+      if (!schema) return [];
+
+      return new Root(schema, [
+        ...operationNode.path,
+        'parameters',
+        parameterObject.name,
+        parameterObject.in,
+      ]);
+    });
+  }
+
   private resolveSchema<T>(schema): T {
     if (!schema) return null;
     const ref = schema?.['$ref'];
+    if (ref && this.resolvedSchemaCache.has(ref)) {
+      return this.resolvedSchemaCache.get(ref) as T;
+    }
     let res = (ref ? this.ajv.getSchema(ref)?.schema : schema) as T;
     if (ref && !res) {
       const path = ref.split('/').join('.');
       const p = path.substring(path.indexOf('.') + 1);
       res = _get(this.apiDoc, p);
+    }
+    if (ref) {
+      this.resolvedSchemaCache.set(ref, res);
     }
     return res;
   }

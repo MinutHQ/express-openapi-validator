@@ -1,10 +1,8 @@
 import Ajv from 'ajv';
 import { OpenAPIV3 } from '../../framework/types';
-import ajv = require('ajv');
-import { OpenAPIFramework } from '../../framework';
 
 export function dereferenceParameter(
-  apiDocs: OpenAPIV3.Document,
+  apiDocs: OpenAPIV3.DocumentV3 | OpenAPIV3.DocumentV3_1,
   parameter: OpenAPIV3.ReferenceObject | OpenAPIV3.ParameterObject,
 ): OpenAPIV3.ParameterObject {
   // TODO this should recurse or use ajv.getSchema - if implemented as such, may want to cache the result

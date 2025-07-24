@@ -4,10 +4,10 @@ import * as express from 'express';
 import * as request from 'supertest';
 import { createApp } from './common/app';
 import * as packageJson from '../package.json';
+import { AppWithServer } from './common/app.common';
 
 describe(packageJson.name, () => {
-  let app = null;
-  let basePath = null;
+  let app: AppWithServer;
 
   before(async () => {
     // Set up the express app
@@ -18,9 +18,9 @@ describe(packageJson.name, () => {
       (app) =>
         app.use(
           `${app.basePath}`,
-          express
-            .Router()
-            .post(`/pets/nullable`, (req, res) => res.json(req.body)),
+          express.Router().post(`/pets/nullable`, (req, res) => {
+            res.json(req.body);
+          }),
         ),
     );
   });

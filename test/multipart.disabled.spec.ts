@@ -4,24 +4,40 @@ import { expect } from 'chai';
 import * as request from 'supertest';
 import { createApp } from './common/app';
 import * as packageJson from '../package.json';
+import { AppWithServer } from './common/app.common';
 
 describe(packageJson.name, () => {
-  let app = null;
+  let app: AppWithServer;
   before(async () => {
     const apiSpec = path.join('test', 'resources', 'multipart.yaml');
-    app = await createApp({ apiSpec, fileUploader: false }, 3003, app =>
-      app.use(
-        `${app.basePath}`,
-        express
-          .Router()
-          .post(`/sample_2`, (req, res) => res.json(req.body))
-          .post(`/sample_1`, (req, res) => res.json(req.body))
-          .get('/range', (req, res) => res.json(req.body)),
-      ),
+    app = await createApp(
+      {
+        apiSpec,
+        fileUploader: false,
+        validateRequests: {
+          allErrors: true,
+        },
+      },
+      3003,
+      (app) =>
+        app.use(
+          `${app.basePath}`,
+          express
+            .Router()
+            .post(`/sample_2`, (req, res) => {
+              res.json(req.body);
+            })
+            .post(`/sample_1`, (req, res) => {
+              res.json(req.body);
+            })
+            .get('/range', (req, res) => {
+              res.json(req.body);
+            }),
+        ),
     );
   });
   after(() => {
-    (<any>app).server.close();
+    app.server.close();
   });
   describe(`multipart disabled`, () => {
     it('should throw 400 when required multipart file field', async () =>
@@ -30,10 +46,8 @@ describe(packageJson.name, () => {
         .set('Content-Type', 'multipart/form-data')
         .set('Accept', 'application/json')
         .expect(400)
-        .then(e => {
-          expect(e.body)
-            .has.property('errors')
-            .with.length(2);
+        .then((e) => {
+          expect(e.body).has.property('errors').with.length(2);
           expect(e.body.errors[0])
             .has.property('message')
             .equal("must have required property 'file'");
@@ -84,10 +98,8 @@ describe(packageJson.name, () => {
         .set('Content-Type', 'application/json')
         .expect('Content-Type', /json/)
         .expect(415)
-        .then(r => {
-          expect(r.body)
-            .has.property('errors')
-            .with.length(1);
+        .then((r) => {
+          expect(r.body).has.property('errors').with.length(1);
           expect(r.body.errors[0])
             .has.property('message')
             .equal('unsupported media type application/json');
@@ -102,7 +114,7 @@ describe(packageJson.name, () => {
         .set('Accept', 'application/json')
         .expect('Content-Type', /json/)
         .expect(400)
-        .then(r => {
+        .then((r) => {
           const e = r.body.errors;
           expect(e).to.have.length(1);
           expect(e[0].path).to.contain('number');

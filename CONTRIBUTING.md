@@ -35,7 +35,21 @@ Be [Create a Pull Request](#create-a-pull-request) once you've written you code.
 
    ```shell
    npm test
+
+   ## Run tests against express@4 and express@latest
+   npm run test:all
+
+   ## Run tests against express@4 only
+   ## NOTE: remember to reinstall express@latest after the run (or run npm run test:express does it automatically)
+   npm run test:with-express4
+   
+   ## To continue testing express@4 after running the preceding command, you may now simply run npm test as npm run test:with-express4 installs express@4 
+   npm test
    ```
+
+4. Update documentation
+
+   Create a PR at - [https://cdimascio.github.io/express-openapi-validator-documentation](https://cdimascio.github.io/express-openapi-validator-documentation)
 
 ## Develop
 

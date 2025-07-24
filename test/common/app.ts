@@ -1,35 +1,46 @@
 import * as express from 'express';
 import * as path from 'path';
 import * as cookieParser from 'cookie-parser';
-import * as bodyParser from 'body-parser';
 import * as logger from 'morgan';
+import { Server } from 'http';
 
 import * as OpenApiValidator  from '../../src';
 import { startServer, routes } from './app.common';
 import { OpenApiValidatorOpts } from '../../src/framework/types';
 
+interface AppWithServer extends express.Application {
+  server: Server;
+  basePath: string;
+}
+
 export async function createApp(
   opts?: OpenApiValidatorOpts,
   port = 3000,
-  customRoutes = (app) => {},
+  customRoutes = (app: AppWithServer) => {},
   useRoutes = true,
-  apiRouter = undefined,
-) {
-  var app = express();
-  (<any>app).basePath = '/v1';
+  useParsers = true,
+): Promise<AppWithServer> {
+  const app = express() as unknown as AppWithServer;
+  app.basePath = '/v1';
 
-  app.use(bodyParser.json());
-  app.use(bodyParser.json({ type: 'application/*+json' }));
-  app.use(bodyParser.json({ type: 'application/*+json*' }));
+  if (useParsers) {
+    app.use(express.json());
+    app.use(express.json({ type: 'application/*+json' }));
+    app.use(express.json({ type: 'application/*+json*' }));
 
-  app.use(bodyParser.text());
-  app.use(bodyParser.text({ type: 'text/html' }));
+    app.use(express.text());
+    app.use(express.text({ type: 'text/html' }));
+
+    app.use(express.urlencoded({ extended: false }));
+  }
   app.use(logger('dev'));
-  app.use(express.urlencoded({ extended: false }));
   app.use(cookieParser());
   app.use(express.static(path.join(__dirname, 'public')));
 
-  app.use(OpenApiValidator.middleware(opts));
+  // Only use the middleware if apiSpec is provided
+  if (opts && opts.apiSpec) {
+    app.use(OpenApiValidator.middleware(opts));
+  }
 
   if (useRoutes) {
     // register common routes

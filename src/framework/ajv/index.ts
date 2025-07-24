@@ -1,39 +1,50 @@
 import AjvDraft4 from 'ajv-draft-04';
+import Ajv2020 from 'ajv/dist/2020'
 import { DataValidateFunction } from 'ajv/dist/types';
 import ajvType from 'ajv/dist/vocabularies/jtd/type';
 import addFormats from 'ajv-formats';
 import { formats } from './formats';
-import { OpenAPIV3, Options, SerDes } from '../types';
+import { AjvInstance, OpenAPIV3, Options, SerDes } from '../types';
+import * as traverse from 'json-schema-traverse';
+import { factoryAjv } from './factory';
 
 interface SerDesSchema extends Partial<SerDes> {
   kind?: 'req' | 'res';
 }
 
 export function createRequestAjv(
-  openApiSpec: OpenAPIV3.Document,
+  openApiSpec: OpenAPIV3.DocumentV3 | OpenAPIV3.DocumentV3_1,
   options: Options = {},
-): AjvDraft4 {
+): AjvInstance {
   return createAjv(openApiSpec, options);
 }
 
 export function createResponseAjv(
-  openApiSpec: OpenAPIV3.Document,
+  openApiSpec: OpenAPIV3.DocumentV3 | OpenAPIV3.DocumentV3_1,
   options: Options = {},
-): AjvDraft4 {
+): AjvInstance {
   return createAjv(openApiSpec, options, false);
 }
 
 function createAjv(
-  openApiSpec: OpenAPIV3.Document,
+  openApiSpec: OpenAPIV3.DocumentV3 | OpenAPIV3.DocumentV3_1,
   options: Options = {},
   request = true,
-): AjvDraft4 {
+): AjvInstance {
   const { ajvFormats, ...ajvOptions } = options;
-  const ajv = new AjvDraft4({
+
+  const ajv = factoryAjv(openApiSpec.openapi, {
     ...ajvOptions,
-    allErrors: true,
-    formats: formats,
-  });
+    formats
+  })
+
+  // Clean openApiSpec
+  traverse(openApiSpec, { allKeys: true }, <traverse.Callback>(schema => {
+    if ('x-stoplight' in schema) {
+      delete schema['x-stoplight']
+    }
+  }))
+
   // Formats will overwrite existing validation,
   // so set in order of least->most important.
   if (options.serDesMap) {
@@ -50,9 +61,6 @@ function createAjv(
   for (let [formatName, formatDefinition] of Object.entries(options.formats)) {
     ajv.addFormat(formatName, formatDefinition);
   }
-  ajv.removeKeyword('propertyNames');
-  ajv.removeKeyword('contains');
-  ajv.removeKeyword('const');
 
   if (options.serDesMap) {
     // Alias for `type` that can execute AFTER x-eov-res-serdes
@@ -88,7 +96,7 @@ function createAjv(
                   keyword: 'serdes',
                   instancePath: ctx.instancePath,
                   schemaPath: it.schemaPath.str,
-                  message: `format is invalid`,
+                  message: e.message || `format is invalid`,
                   params: { 'x-eov-req-serdes': ctx.parentDataProperty },
                 },
               ];
@@ -108,19 +116,26 @@ function createAjv(
       compile: (sch, p, it) => {
         if (sch) {
           const validate: DataValidateFunction = (data, ctx) => {
-            const isValid = data == null;
-            if (!isValid) {
-              validate.errors = [
-                {
-                  keyword: 'readOnly',
-                  instancePath: ctx.instancePath,
-                  schemaPath: it.schemaPath.str,
-                  message: `is read-only`,
-                  params: { writeOnly: ctx.parentDataProperty },
-                },
-              ];
+            if (options.removeAdditional == true || options.removeAdditional == "all" || options.removeAdditional == "failing") {
+              // Remove readonly properties in request
+              delete ctx.parentData[ctx.parentDataProperty];
+              return true;
             }
-            return false;
+            else {
+              const isValid = data == null;
+              if (!isValid) {
+                validate.errors = [
+                  {
+                    keyword: 'readOnly',
+                    instancePath: ctx.instancePath,
+                    schemaPath: it.schemaPath.str,
+                    message: `is read-only`,
+                    params: { writeOnly: ctx.parentDataProperty },
+                  },
+                ];
+              }
+              return false;
+            }
           };
           return validate;
         }
@@ -169,19 +184,26 @@ function createAjv(
       compile: (sch, p, it) => {
         if (sch) {
           const validate: DataValidateFunction = (data, ctx) => {
-            const isValid = data == null;
-            if (!isValid) {
-              validate.errors = [
-                {
-                  keyword: 'writeOnly',
-                  instancePath: ctx.instancePath,
-                  schemaPath: it.schemaPath.str,
-                  message: `is write-only`,
-                  params: { writeOnly: ctx.parentDataProperty },
-                },
-              ];
+            if (options.removeAdditional == true || options.removeAdditional == "all" || options.removeAdditional == "failing") {
+              // Remove readonly properties in request
+              delete ctx.parentData[ctx.parentDataProperty];
+              return true;
             }
-            return false;
+            else {
+              const isValid = data == null;
+              if (!isValid) {
+                validate.errors = [
+                  {
+                    keyword: 'writeOnly',
+                    instancePath: ctx.instancePath,
+                    schemaPath: it.schemaPath.str,
+                    message: `is write-only`,
+                    params: {writeOnly: ctx.parentDataProperty},
+                  },
+                ];
+              }
+              return false;
+            }
           };
           return validate;
         }

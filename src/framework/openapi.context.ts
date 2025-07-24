@@ -6,21 +6,30 @@ export interface RoutePair {
   openApiRoute: string;
 }
 export class OpenApiContext {
-  public readonly apiDoc: OpenAPIV3.Document;
+  public readonly apiDoc: OpenAPIV3.DocumentV3 | OpenAPIV3.DocumentV3_1;
   public readonly expressRouteMap = {};
   public readonly openApiRouteMap = {};
   public readonly routes: RouteMetadata[] = [];
   public readonly ignoreUndocumented: boolean;
+  public readonly useRequestUrl: boolean;
+  public readonly serial: number;
   private readonly basePaths: string[];
   private readonly ignorePaths: RegExp | Function;
 
-  constructor(spec: Spec, ignorePaths: RegExp | Function, ignoreUndocumented: boolean = false) {
+  constructor(
+    spec: Spec,
+    ignorePaths: RegExp | Function,
+    ignoreUndocumented: boolean = false,
+    useRequestUrl = false,
+  ) {
     this.apiDoc = spec.apiDoc;
     this.basePaths = spec.basePaths;
     this.routes = spec.routes;
     this.ignorePaths = ignorePaths;
     this.ignoreUndocumented = ignoreUndocumented;
     this.buildRouteMaps(spec.routes);
+    this.useRequestUrl = useRequestUrl;
+    this.serial = spec.serial;
   }
 
   public isManagedRoute(path: string): boolean {

@@ -6,7 +6,7 @@ import {
   augmentAjvErrors,
   ContentType,
   ajvErrorsToValidatorError,
-  findResponseContent,
+  findResponseContent, useAjvCache,
 } from './util';
 import {
   OpenAPIV3,
@@ -27,20 +27,23 @@ interface ValidateResult {
 }
 export class ResponseValidator {
   private ajvBody: Ajv;
-  private spec: OpenAPIV3.Document;
+  private spec: OpenAPIV3.DocumentV3 | OpenAPIV3.DocumentV3_1;
   private validatorsCache: {
     [key: string]: { [key: string]: ValidateFunction };
   } = {};
   private eovOptions: ValidateResponseOpts;
+  private serial: number;
 
   constructor(
-    openApiSpec: OpenAPIV3.Document,
+    openApiSpec: OpenAPIV3.DocumentV3 | OpenAPIV3.DocumentV3_1,
     options: Options = {},
     eovOptions: ValidateResponseOpts = {},
+    serial: number = -1,
   ) {
     this.spec = openApiSpec;
     this.ajvBody = createResponseAjv(openApiSpec, options);
     this.eovOptions = eovOptions;
+    this.serial = serial;
 
     // This is a pseudo-middleware function. It doesn't get registered with
     // express via `use`
@@ -51,7 +54,7 @@ export class ResponseValidator {
 
   public validate(): RequestHandler {
     return mung.json((body, req, res) => {
-      if (req.openapi) {
+      if (req.openapi && this.serial == req.openapi.serial) {
         const openapi = <OpenApiRequestMetadata>req.openapi;
         // instead of openapi.schema, use openapi._responseSchema to get the response copy
         const responses: OpenAPIV3.ResponsesObject = (<any>openapi)
@@ -99,17 +102,14 @@ export class ResponseValidator {
   ): { [key: string]: ValidateFunction } {
     // get the request content type - used only to build the cache key
     const contentTypeMeta = ContentType.from(req);
-    const contentType =
-      (contentTypeMeta.contentType?.indexOf('multipart') > -1
-        ? contentTypeMeta.equivalents()[0]
-        : contentTypeMeta.contentType) ?? 'not_provided';
+    const contentType = contentTypeMeta.normalize() ?? 'not_provided';
 
     const openapi = <OpenApiRequestMetadata>req.openapi;
     const key = `${req.method}-${openapi.expressRoute}-${contentType}`;
 
     let validators = this.validatorsCache[key];
     if (!validators) {
-      validators = this.buildValidators(responses);
+      validators = this.buildValidators(responses, key);
       this.validatorsCache[key] = validators;
     }
     return validators;
@@ -212,7 +212,7 @@ export class ResponseValidator {
    * @param responses
    * @returns a map of validators
    */
-  private buildValidators(responses: OpenAPIV3.ResponsesObject): {
+  private buildValidators(responses: OpenAPIV3.ResponsesObject, ajvCacheKey: string): {
     [key: string]: ValidateFunction;
   } {
     const validationTypes = (response) => {
@@ -295,9 +295,10 @@ export class ResponseValidator {
         const schema = contentTypeSchemas[contentType];
         schema.paths = this.spec.paths; // add paths for resolution with multi-file
         schema.components = this.spec.components; // add components for resolution w/ multi-file
+        const validator = useAjvCache(this.ajvBody, <object>schema, `${ajvCacheKey}-${code}-${contentType}`)
         validators[code] = {
           ...validators[code],
-          [contentType]: this.ajvBody.compile(<object>schema),
+          [contentType]: validator,
         };
       }
     }

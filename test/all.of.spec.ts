@@ -1,26 +1,46 @@
-import * as path from 'path';
-import * as express from 'express';
 import { expect } from 'chai';
+import * as express from 'express';
+import { Server } from 'http';
+import * as path from 'path';
 import * as request from 'supertest';
-import { createApp } from './common/app';
 import * as packageJson from '../package.json';
+import { createApp } from './common/app';
+
+interface AppWithServer extends express.Application {
+  server: Server;
+  basePath: string;
+}
 
 describe(packageJson.name, () => {
-  let app = null;
+  let app: AppWithServer;
 
   before(async () => {
     // Set up the express app
     const apiSpec = path.join('test', 'resources', 'all.of.yaml');
-    app = await createApp({ apiSpec }, 3005, (app) =>
-      app.use(
-        `${app.basePath}`,
-        express.Router().post(`/all_of`, (req, res) => res.json(req.body)),
-      ),
+    const createdApp = await createApp(
+      {
+        apiSpec,
+        validateRequests: {
+          allErrors: true,
+        },
+      },
+      3005,
+      (app) => {
+        const router = express.Router().post('/all_of', (req, res) => {
+          res.json(req.body);
+        });
+        
+        app.use(`${app.basePath}`, router);
+      },
     );
+    
+    app = createdApp as unknown as AppWithServer;
   });
 
   after(() => {
-    app.server.close();
+    if (app && app.server) {
+      app.server.close();
+    }
   });
 
   it('should validate allOf', async () =>

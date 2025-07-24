@@ -12,7 +12,7 @@ describe('invalid api spec', () => {
       apiSpec,
     });
     await request(app).get('/dev/hello/echo').expect(500);
-    app.server.close();
+    app.server!.close();
   });
   it('should fail gracefully when validateApiSpec is false', async () => {
     const apiSpec = createApiSpec();
@@ -21,7 +21,7 @@ describe('invalid api spec', () => {
       validateApiSpec: false,
     });
     await request(app).get('/dev/hello/echo').expect(500);
-    app.server.close();
+    app.server!.close();
   });
 });
 
@@ -32,17 +32,19 @@ async function createApp(
 
   app.use(OpenApiValidator.middleware(opts));
   app.use(
-    express.Router().get('/dev/hello/echo', (req, res) => {
-      res.status(200).send((<any>req.params).value);
-    }),
+    express
+      .Router()
+      .get('/dev/hello/echo', (req: express.Request, res: express.Response) => {
+        res.status(200).send(req.params.value);
+      }),
   );
 
   await startServer(app, 3001);
   return app;
 }
 
-function createApiSpec(): OpenAPIV3.Document {
-  return <any>{
+function createApiSpec(): OpenAPIV3.DocumentV3 {
+  return {
     openapi: '3.0.3',
     info: {
       title: 'The API',
@@ -69,7 +71,7 @@ function createApiSpec(): OpenAPIV3.Document {
           summary: 'Responds with the request.',
           description: '',
           responses: { '200': { description: 'OK' } },
-          parameters: { q: 'string' }, // <-- THE INCORRECT BIT
+          parameters: { q: 'string' } as any, // <-- THE INCORRECT BIT
           tags: ['dev/hello'],
         },
       },

@@ -59,6 +59,8 @@ paths:
             type: integer
             format: int32
             minimum: 5
+            example: 8
+          example: 8
         - name: test
           in: query
           description: maximum number of results to return
@@ -81,7 +83,8 @@ paths:
                     enum:
                       - bar
                       - baz
-        - name: testArray
+              example: {}
+        - name: testArrayNoExplode
           in: query
           description: Array in query param
           schema:
@@ -92,6 +95,15 @@ paths:
                 - foo
                 - bar
                 - baz
+          style: form
+          explode: false
+        - name: testArrayNoExplode2
+          in: query
+          description: Array in query param
+          schema:
+            type: array
+            items:
+              type: string
           style: form
           explode: false
         - name: testArrayExplode
@@ -106,7 +118,7 @@ paths:
                 - bar
                 - baz
           style: form
-          explode: true
+#          explode: true
       responses:
         '200':
           description: pet response
@@ -114,14 +126,21 @@ paths:
             application/json:
               schema:
                 type: array
+                example: 
+                  - {}
                 items:
                   $ref: '#/components/schemas/Pet'
+              example: {}
         default:
           description: unexpected error
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+              examples:
+                jsonObject:
+                  summary: A sample object
+                  externalValue: "http://example.com/examples/object-example.json"
     post:
       description: Creates a new pet in the store.  Duplicates are allowed
       operationId: addPet
@@ -362,8 +381,38 @@ paths:
             application/json; charset=utf-8:
               schema:
                 $ref: '#/components/schemas/Error'
+  /pets_content_types:
+    post:
+      description: Creates a new pet in the store.  Duplicates are allowed
+      operationId: addPet
+      requestBody:
+        description: Pet to add to the store
+        required: true
+        content:
+          application/json; version=1:
+            schema:
+              $ref: '#/components/schemas/NewPet'
+      responses:
+        '200':
+          description: pet response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Pet'
+        default:
+          description: unexpected error
+          content:
+            application/json; charset=utf-8:
+              schema:
+                $ref: '#/components/schemas/Error'
 
 components:
+  examples: 
+    objectExample:
+      value:
+        id: 1
+        name: new object
+      summary: A sample object
   parameters:
     $ref: 'xt.openapi.parameters.yaml#/parameters'
 

@@ -1,11 +1,11 @@
 import {
-  OpenAPIV3,
-  OpenApiRequest,
-  SecurityHandlers,
-  OpenApiRequestMetadata,
-  OpenApiRequestHandler,
-  InternalServerError,
   HttpError,
+  InternalServerError,
+  OpenApiRequest,
+  OpenApiRequestHandler,
+  OpenApiRequestMetadata,
+  OpenAPIV3,
+  SecurityHandlers,
 } from '../framework/types';
 
 const defaultSecurityHandler = (
@@ -17,13 +17,32 @@ const defaultSecurityHandler = (
 type SecuritySchemesMap = {
   [key: string]: OpenAPIV3.ReferenceObject | OpenAPIV3.SecuritySchemeObject;
 };
+
 interface SecurityHandlerResult {
   success: boolean;
   status?: number;
   error?: string;
 }
+
+function extractErrorsFromResults(results: (SecurityHandlerResult | SecurityHandlerResult[])[]) {
+  return results.map(result => {
+    if (Array.isArray(result)) {
+      return result.map(it => it).filter(it => !it.success);
+    }
+    return [result].filter(it => !it.success);
+  }).flatMap(it => [...it]);
+}
+
+function didAllSecurityRequirementsPass(results: SecurityHandlerResult[]) {
+  return results.every(it => it.success);
+}
+
+function didOneSchemaPassValidation(results: (SecurityHandlerResult | SecurityHandlerResult[])[]) {
+  return results.some(result => Array.isArray(result) ? didAllSecurityRequirementsPass(result) : result.success);
+}
+
 export function security(
-  apiDoc: OpenAPIV3.Document,
+  apiDoc: OpenAPIV3.DocumentV3 | OpenAPIV3.DocumentV3_1,
   securityHandlers: SecurityHandlers,
 ): OpenApiRequestHandler {
   return async (req, res, next) => {
@@ -62,50 +81,13 @@ export function security(
 
       // TODO handle AND'd and OR'd security
       // This assumes OR only! i.e. at least one security passed authentication
-      let firstError: SecurityHandlerResult = null;
-      let success = false;
-
-      function checkErrorWithOr(res) {
-        return res.forEach((r) => {
-          if (r.success) {
-            success = true;
-          } else if (!firstError) {
-            firstError = r;
-          }
-        });
-      }
-
-      function checkErrorsWithAnd(res) {
-        let allSuccess = false;
-
-        res.forEach((r) => {
-          if (!r.success) {
-            allSuccess = false;
-            if (!firstError) {
-              firstError = r;
-            }
-          } else if (!firstError) {
-            allSuccess = true;
-          }
-        });
-
-        if (allSuccess) {
-          success = true;
-        }
-      }
-
-      results.forEach((result) => {
-        if (Array.isArray(result) && result.length > 1) {
-          checkErrorsWithAnd(result);
-        } else {
-          checkErrorWithOr(result);
-        }
-      });
+      const success = didOneSchemaPassValidation(results);
 
       if (success) {
         next();
       } else {
-        throw firstError;
+        const errors = extractErrorsFromResults(results);
+        throw errors[0];
       }
     } catch (e) {
       const message = e?.error?.message || 'unauthorized';
@@ -129,6 +111,7 @@ class SecuritySchemes {
   private securitySchemes: SecuritySchemesMap;
   private securityHandlers: SecurityHandlers;
   private securities: OpenAPIV3.SecurityRequirementObject[];
+
   constructor(
     securitySchemes: SecuritySchemesMap,
     securityHandlers: SecurityHandlers,
@@ -155,16 +138,10 @@ class SecuritySchemes {
       }
       return Promise.all(
         Object.keys(s).map(async (securityKey) => {
-          var _a, _b, _c;
+
           try {
             const scheme = this.securitySchemes[securityKey];
-            const handler =
-              (_b =
-                (_a = this.securityHandlers) === null || _a === void 0
-                  ? void 0
-                  : _a[securityKey]) !== null && _b !== void 0
-                ? _b
-                : fallbackHandler;
+            const handler = this.securityHandlers?.[securityKey] ?? fallbackHandler;
             const scopesTmp = s[securityKey];
             const scopes = Array.isArray(scopesTmp) ? scopesTmp : [];
             if (!scheme) {
@@ -197,7 +174,7 @@ class SecuritySchemes {
           } catch (e) {
             return {
               success: false,
-              status: (_c = e.status) !== null && _c !== void 0 ? _c : 401,
+              status: e.status ?? 401,
               error: e,
             };
           }
@@ -213,6 +190,7 @@ class AuthValidator {
   private scheme;
   private path: string;
   private scopes: string[];
+
   constructor(req: OpenApiRequest, scheme, scopes: string[] = []) {
     const openapi = <OpenApiRequestMetadata>req.openapi;
     this.req = req;
@@ -248,18 +226,32 @@ class AuthValidator {
       const authHeader =
         req.headers['authorization'] &&
         req.headers['authorization'].toLowerCase();
-
-      if (!authHeader) {
-        throw Error(`Authorization header required`);
-      }
-
+      // req.cookies will be `undefined` without `cookie-parser` middleware
+      const authCookie =
+        req.cookies?.[scheme.name] || req.signedCookies?.[scheme.name];
+  
       const type = scheme.scheme && scheme.scheme.toLowerCase();
-      if (type === 'bearer' && !authHeader.includes('bearer')) {
-        throw Error(`Authorization header with scheme 'Bearer' required`);
+      if (type === 'bearer') {
+        if (authHeader && !authHeader.includes('bearer')) {
+          throw Error(`Authorization header with scheme 'Bearer' required`);
+        }
+        
+        if (!authHeader && !authCookie) {
+          if (scheme.in === 'cookie') {
+            throw Error(`Cookie authentication required`);
+          } else {
+            throw Error(`Authorization header required`);
+          }
+        }
       }
-
-      if (type === 'basic' && !authHeader.includes('basic')) {
-        throw Error(`Authorization header with scheme 'Basic' required`);
+  
+      if (type === 'basic') {
+        if (!authHeader) {
+          throw Error(`Authorization header required`);
+        }
+        if (!authHeader.includes('basic')) {
+          throw Error(`Authorization header with scheme 'Basic' required`);
+        }
       }
     }
   }

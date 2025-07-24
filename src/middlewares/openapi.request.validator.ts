@@ -1,26 +1,27 @@
 import Ajv, { ValidateFunction } from 'ajv';
+import { NextFunction, RequestHandler, Response } from 'express';
 import { createRequestAjv } from '../framework/ajv';
+import {
+  BadRequest,
+  BodySchema,
+  NotFound,
+  OpenAPIV3,
+  OpenApiRequest,
+  OpenApiRequestMetadata,
+  ParametersSchema,
+  RequestValidatorOptions,
+  ValidateRequestOpts,
+  ValidationSchema,
+} from '../framework/types';
+import { BodySchemaParser } from './parsers/body.parse';
+import { RequestParameterMutator } from './parsers/req.parameter.mutator';
+import { ParametersSchemaParser } from './parsers/schema.parse';
 import {
   ContentType,
   ajvErrorsToValidatorError,
   augmentAjvErrors,
+  useAjvCache,
 } from './util';
-import { NextFunction, RequestHandler, Response } from 'express';
-import {
-  OpenAPIV3,
-  OpenApiRequest,
-  RequestValidatorOptions,
-  ValidateRequestOpts,
-  OpenApiRequestMetadata,
-  NotFound,
-  BadRequest,
-  ParametersSchema,
-  BodySchema,
-  ValidationSchema,
-} from '../framework/types';
-import { BodySchemaParser } from './parsers/body.parse';
-import { ParametersSchemaParser } from './parsers/schema.parse';
-import { RequestParameterMutator } from './parsers/req.parameter.mutator';
 
 type OperationObject = OpenAPIV3.OperationObject;
 type SchemaObject = OpenAPIV3.SchemaObject;
@@ -28,23 +29,31 @@ type ReferenceObject = OpenAPIV3.ReferenceObject;
 type SecurityRequirementObject = OpenAPIV3.SecurityRequirementObject;
 type SecuritySchemeObject = OpenAPIV3.SecuritySchemeObject;
 type ApiKeySecurityScheme = OpenAPIV3.ApiKeySecurityScheme;
-
 export class RequestValidator {
   private middlewareCache: { [key: string]: RequestHandler } = {};
-  private apiDoc: OpenAPIV3.Document;
+  private apiDoc: OpenAPIV3.DocumentV3 | OpenAPIV3.DocumentV3_1;
   private ajv: Ajv;
   private ajvBody: Ajv;
   private requestOpts: ValidateRequestOpts = {};
 
   constructor(
-    apiDoc: OpenAPIV3.Document,
+    apiDoc: OpenAPIV3.DocumentV3 | OpenAPIV3.DocumentV3_1,
     options: RequestValidatorOptions = {},
   ) {
     this.middlewareCache = {};
     this.apiDoc = apiDoc;
+    // Examples not needed for validation
+    delete this.apiDoc.components?.examples;
     this.requestOpts.allowUnknownQueryParameters =
       options.allowUnknownQueryParameters;
-    this.ajv = createRequestAjv(apiDoc, { ...options, coerceTypes: true });
+
+    this.ajv = createRequestAjv(
+      apiDoc,
+      // This should always be true as it handles query params (everything, but the body)
+      // This should always be coerced. Note that coerceTypes = 'array` also operates as true
+      // but also coerces 'array' types
+      !options.coerceTypes ? { ...options, coerceTypes: true } : options,
+    );
     this.ajvBody = createRequestAjv(apiDoc, options);
   }
 
@@ -52,7 +61,7 @@ export class RequestValidator {
     req: OpenApiRequest,
     res: Response,
     next: NextFunction,
-  ): void {
+  ): void | Promise<void> {
     if (!req.openapi) {
       // this path was not found in open api and
       // this path is not defined under an openapi base path
@@ -65,12 +74,17 @@ export class RequestValidator {
     const reqSchema = openapi.schema;
     // cache middleware by combining method, path, and contentType
     const contentType = ContentType.from(req);
-    const contentTypeKey = contentType.equivalents()[0] ?? 'not_provided';
+    const contentTypeKey = contentType.normalize() ?? 'not_provided';
     // use openapi.expressRoute as path portion of key
     const key = `${req.method}-${path}-${contentTypeKey}`;
 
     if (!this.middlewareCache[key]) {
-      const middleware = this.buildMiddleware(path, reqSchema, contentType);
+      const middleware = this.buildMiddleware(
+        path,
+        reqSchema,
+        contentType,
+        key,
+      );
       this.middlewareCache[key] = middleware;
     }
     return this.middlewareCache[key](req, res, next);
@@ -94,16 +108,23 @@ export class RequestValidator {
     path: string,
     reqSchema: OperationObject,
     contentType: ContentType,
+    ajvCacheKey: string,
   ): RequestHandler {
     const apiDoc = this.apiDoc;
     const schemaParser = new ParametersSchemaParser(this.ajv, apiDoc);
     const parameters = schemaParser.parse(path, reqSchema.parameters);
     const securityQueryParam = Security.queryParam(apiDoc, reqSchema);
     const body = new BodySchemaParser().parse(path, reqSchema, contentType);
-    const validator = new Validator(this.apiDoc, parameters, body, {
-      general: this.ajv,
-      body: this.ajvBody,
-    });
+    const validator = new Validator(
+      this.apiDoc,
+      parameters,
+      body,
+      {
+        general: this.ajv,
+        body: this.ajvBody,
+      },
+      ajvCacheKey,
+    );
 
     const allowUnknownQueryParameters = !!(
       reqSchema['x-eov-allow-unknown-query-parameters'] ??
@@ -130,7 +151,12 @@ export class RequestValidator {
         }
         req.params = openapi.pathParams ?? req.params;
       }
-
+      // HACK for express 5, temporarily make req.query mutable
+      const reqQueryDescriptor = Object.getOwnPropertyDescriptor(req, 'query');
+      Object.defineProperty(req, 'query', {
+        writable: true,
+        value: req.query,
+      });
       const schemaProperties = validator.allSchemaProperties;
       const mutator = new RequestParameterMutator(
         this.ajv,
@@ -154,6 +180,18 @@ export class RequestValidator {
         }
       }
 
+      const schemaBody = <any>validator?.schemaBody;
+      if (contentType.mediaType === 'multipart/form-data') {
+        // make req.body {}
+        req.body ??= {};
+        this.multipartNested(req, schemaBody);
+      }
+
+      // HACK for express 5, Restore the original descriptor
+      if (reqQueryDescriptor) {
+        Object.defineProperty(req, 'query', reqQueryDescriptor);
+      }
+
       const cookies = req.cookies
         ? {
             ...req.cookies,
@@ -168,11 +206,6 @@ export class RequestValidator {
         cookies,
         body: req.body,
       };
-      const schemaBody = <any>validator?.schemaBody;
-
-      if (contentType.mediaType === 'multipart/form-data') {
-        this.multipartNested(req, schemaBody);
-      }
 
       const discriminator = schemaBody?.properties?.body?._discriminator;
       const discriminatorValidator = this.discriminatorValidator(
@@ -212,9 +245,14 @@ export class RequestValidator {
   }
 
   private multipartNested(req, schemaBody) {
+    if (!req.body) {
+      return;
+    }
+
     Object.keys(req.body).forEach((key) => {
       const value = req.body[key];
-      const type = schemaBody?.properties?.body?.properties[key]?.type;
+      // TODO: Add support for oneOf, anyOf, allOf as the body schema
+      const type = schemaBody?.properties?.body?.properties?.[key]?.type;
       if (['array', 'object'].includes(type)) {
         try {
           req.body[key] = JSON.parse(value);
@@ -281,7 +319,7 @@ export class RequestValidator {
 }
 
 class Validator {
-  private readonly apiDoc: OpenAPIV3.Document;
+  private readonly apiDoc: OpenAPIV3.DocumentV3 | OpenAPIV3.DocumentV3_1;
   readonly schemaGeneral: object;
   readonly schemaBody: object;
   readonly validatorGeneral: ValidateFunction;
@@ -289,13 +327,14 @@ class Validator {
   readonly allSchemaProperties: ValidationSchema;
 
   constructor(
-    apiDoc: OpenAPIV3.Document,
+    apiDoc: OpenAPIV3.DocumentV3 | OpenAPIV3.DocumentV3_1,
     parametersSchema: ParametersSchema,
     bodySchema: BodySchema,
     ajv: {
       general: Ajv;
       body: Ajv;
     },
+    ajvCacheKey: string,
   ) {
     this.apiDoc = apiDoc;
     this.schemaGeneral = this._schemaGeneral(parametersSchema);
@@ -304,8 +343,12 @@ class Validator {
       ...(<any>this.schemaGeneral).properties, // query, header, params props
       body: (<any>this.schemaBody).properties.body, // body props
     };
-    this.validatorGeneral = ajv.general.compile(this.schemaGeneral);
-    this.validatorBody = ajv.body.compile(this.schemaBody);
+    this.validatorGeneral = useAjvCache(
+      ajv.general,
+      this.schemaGeneral,
+      ajvCacheKey,
+    );
+    this.validatorBody = useAjvCache(ajv.body, this.schemaBody, ajvCacheKey);
   }
 
   private _schemaGeneral(parameters: ParametersSchema): object {
@@ -343,11 +386,15 @@ class Validator {
 
 class Security {
   public static queryParam(
-    apiDocs: OpenAPIV3.Document,
+    apiDocs: OpenAPIV3.DocumentV3 | OpenAPIV3.DocumentV3_1,
     schema: OperationObject,
   ): string[] {
-    const hasPathSecurity = schema.security?.length > 0 ?? false;
-    const hasRootSecurity = apiDocs.security?.length > 0 ?? false;
+    const hasPathSecurity = schema.security
+      ? schema.security.length > 0
+      : false;
+    const hasRootSecurity = apiDocs.security
+      ? apiDocs.security.length > 0
+      : false;
 
     let usedSecuritySchema: SecurityRequirementObject[] = [];
     if (hasPathSecurity) {

@@ -6,8 +6,8 @@ import * as request from 'supertest';
 import { createApp } from './common/app';
 
 describe('a multipart request', () => {
-  let app = null;
-  const fileNames = [];
+  let app;
+  const fileNames: string[] = [];
   before(async () => {
     const apiSpec = path.join('test', 'resources', 'multipart.yaml');
     app = await createApp(
@@ -33,7 +33,10 @@ describe('a multipart request', () => {
                 metadata: req.body.metadata,
               });
             })
-            .post(`/sample_*`, (req, res) => res.json(req.body)),
+            // .post(`/sample_*suffix`, (req, res) => {
+            .post(/^\/sample_.*/, (req, res) => {
+              res.json(req.body);
+            }),
         ),
     );
   });
@@ -41,10 +44,11 @@ describe('a multipart request', () => {
     fileNames.length = 0;
   });
   after(() => {
-    (<any>app).server.close();
+    app.server.close();
   });
 
   describe('that contains $refs', () => {
+    // TODO - fails with express 4 - parse multipart
     it('should validate a request body with a schemaObject $ref', async () =>
       request(app)
         .post(`${app.basePath}/sample_4`)
@@ -52,6 +56,7 @@ describe('a multipart request', () => {
         .attach('image', 'package.json')
         .expect(200));
 
+    // TODO - fails with express 4 - parse multipart
     it('should validate a requestBody $ref', async () =>
       request(app)
         .post(`${app.basePath}/sample_5`)
@@ -59,6 +64,7 @@ describe('a multipart request', () => {
         .attach('image', 'package.json')
         .expect(200));
 
+    // TODO - fails with express 4 - parse multipart
     it('should validate a requestBody $ref that contains a schemaObject $ref', async () =>
       request(app)
         .post(`${app.basePath}/sample_6`)
@@ -123,14 +129,14 @@ describe('a multipart request', () => {
 
       const imgStream = fs.createReadStream(testImage);
       imgStream.on('end', () => req.end(done));
-      imgStream.pipe(<any>req, { end: false });
+      imgStream.pipe(req as any, { end: false });
     });
 
     it('should validate multipart file and metadata', async () => {
       const array_with_objects = JSON.stringify([
         {
-          foo: 'bar'
-        }
+          foo: 'bar',
+        },
       ]);
 
       await request(app)
@@ -149,5 +155,42 @@ describe('a multipart request', () => {
         });
       expect(fileNames).to.deep.equal(['package.json']);
     });
+  });
+});
+
+describe('when request does not use parsers', () => {
+  let app;
+
+  after(() => {
+    app.server.close();
+  });
+
+  before(async () => {
+    const apiSpec = path.join('test', 'resources', 'multipart.yaml');
+    app = await createApp(
+      {
+        apiSpec,
+      },
+      3004,
+      (app) =>
+        app.use(
+          `${app.basePath}`,
+          express.Router().post(`/sample_7`, (req, res) => {
+            res.json('ok');
+          }),
+        ),
+      false,
+      false,
+    );
+  });
+
+  it('should validate that endpoint exists', async () => {
+    await request(app)
+      .post(`${app.basePath}/sample_7`)
+      .set('Content-Type', 'multipart/form-data')
+      .expect(200)
+      .then((r) => {
+        expect(r.body).to.equal('ok');
+      });
   });
 });
